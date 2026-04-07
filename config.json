@@ -1,0 +1,7 @@
+{
+  "codex_timeout": 180,
+  "max_review_cycles": 3,
+  "openrouter_api_key": "",
+  "fallback_model": "openai/gpt-4o",
+  "max_context_chars": 20000
+}
