@@ -46,28 +46,42 @@ Zero human intervention. Zero context switching. The bugs never reach your termi
 
 ---
 
-### But can it catch *design* problems?
+### It doesn't just scan files — it traces through your code
 
-Yes — if you give it context.
-
-When Claude writes a `.viper/brief.md` before stopping (explaining what it built and why), Codex doesn't just look for bugs. It checks whether the code actually solves the right problem:
+Codex has full filesystem access (read-only). It reads every changed file, follows imports, checks callers, and traces data flow across boundaries. Here's a real test on a 3-file order management system (`db.py` -> `orders.py` -> `api.py`):
 
 ```
-[Viper Code Review - Cycle 2/3]
+[Viper Code Review - Cycle 1/3]
 
 ISSUES FOUND
 
-- auth.py:9   Passwords hashed with unsalted MD5. Does not meet basic
-              security requirements for a login/registration module.
+- api.py:17    The cancel endpoint authorizes based only on the user_id
+               path parameter. There is no authenticated user check
+               anywhere in the request flow. Any caller who knows another
+               user's ID can cancel their orders. This does not satisfy
+               "users should only be able to cancel their own orders."
 
-- auth.py:15  SQL injection in login query. Crafted username can
-              bypass authentication entirely.
+- orders.py:15 order_id comes from Flask path as a string, while
+               o["id"] from SQLite is an integer. The equality check
+               always fails — cancellation is silently non-functional.
 
-- auth.py:23  create_user always returns True. Cannot report failures
-              for the registration flow described in the brief.
+- orders.py:14 Cancellation is read-then-write across separate queries
+  + db.py:25   and connections. A concurrent request can change the order
+               state after the read, and this code still overwrites it
+               to cancelled. Race condition violates the state machine.
+
+- orders.py:23 Return value of update_order_status is ignored. If the
+               update affects zero rows, cancel_order still returns
+               success — false 200 responses.
 ```
 
-Without the brief, Codex catches the SQL injection and MD5. *With* the brief — knowing this is auth for a web app — it also flags that the approach fundamentally doesn't meet the requirement.
+Every finding required reading multiple files and tracing the connections between them. The type mismatch (`str` vs `int`) spans Flask -> business logic -> SQLite. The race condition spans business logic -> data layer. The auth gap spans the route handler -> the brief's stated requirement.
+
+That's not a linter. That's a senior engineer reading your code.
+
+### It reviews against intent, not just syntax
+
+When Claude writes a `.viper/brief.md` before stopping (what it built, why, what the requirements were), Codex doesn't just look for bugs — it checks whether the code actually solves the right problem. The auth finding above was only caught because the brief stated "users should only cancel their own orders." Without it, the code *looks* fine.
 
 ---
 
