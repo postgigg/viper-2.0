@@ -1,29 +1,86 @@
+<p align="center">
+  <img src="https://img.shields.io/badge/Claude_Code-Hook-blueviolet?style=for-the-badge" alt="Claude Code Hook">
+  <img src="https://img.shields.io/badge/Reviewer-OpenAI_Codex-00A67E?style=for-the-badge" alt="Codex Reviewer">
+  <img src="https://img.shields.io/badge/Status-Active-brightgreen?style=for-the-badge" alt="Active">
+</p>
+
 # Viper 2.0
 
-**Automated code review gate for Claude Code** — Viper intercepts Claude before it finishes and has a second AI (OpenAI Codex) review the changes. If issues are found, Claude is blocked from stopping and must fix them first.
+### Claude writes code. Codex reviews it. Bugs get caught before you see them.
 
-## How It Works
+Viper sits between Claude and the finish line. Every time Claude tries to stop, Viper hands the code to a second AI — OpenAI Codex — for an independent review. If Codex finds problems, Claude **can't stop**. It has to fix them first.
 
-Viper is a **Claude Code stop hook**. Here's the full flow:
+No config. No dashboards. No manual review queues. Just a Python script that says "you're not done yet."
 
-1. **Claude finishes working** and is about to stop responding.
-2. **Claude Code triggers the stop hook**, passing the session context to Viper via stdin.
-3. **Viper checks git** for any changed, staged, or untracked files in the working directory.
-4. **If files changed**, Viper reads their contents (up to 15 files, 20KB total) and builds a review prompt.
-5. **The prompt is piped to `codex exec`** (OpenAI Codex CLI) via stdin, running in read-only sandbox mode.
-6. **Codex reviews the code** for bugs, logic errors, security issues, and missing edge cases.
-7. **Based on the verdict:**
-   - **APPROVED** — Claude is allowed to stop. State is cached so the same session isn't re-reviewed.
-   - **ISSUES FOUND** — Viper **blocks** Claude from stopping and injects the review feedback. Claude sees the issues and automatically fixes them.
-8. **The cycle repeats** up to `max_review_cycles` (default: 3) to prevent infinite loops.
+---
 
-If Codex CLI is not installed, Viper falls back to the **OpenRouter API** (configurable model, default GPT-4o).
+### What it looks like in practice
+
+Claude builds an invoice manager. Tries to stop. Gets blocked:
+
+```
+[Viper Code Review - Cycle 1/3]
+
+ISSUES FOUND
+
+- app.html:53   amount is a string from input, not a number.
+                 total += inv.amount concatenates instead of adding.
+                 total.toFixed(2) throws TypeError.
+
+- app.html:55   innerHTML with unsanitized user data.
+                 customer_name and notes can carry script payloads.
+                 Stored DOM XSS.
+
+- app.html:109  eval() on user-provided template string.
+                 Full script execution in page context.
+
+- app.html:114  Recursive object merge without blocking __proto__.
+                 Prototype pollution.
+
+Fix the issues above. Do NOT explain what you're doing — just fix them.
+```
+
+Claude fixes all 4. Tries to stop again. Codex re-reviews. **APPROVED.** Claude stops.
+
+Zero human intervention. Zero context switching. The bugs never reach your terminal.
+
+---
+
+### But can it catch *design* problems?
+
+Yes — if you give it context.
+
+When Claude writes a `.viper/brief.md` before stopping (explaining what it built and why), Codex doesn't just look for bugs. It checks whether the code actually solves the right problem:
+
+```
+[Viper Code Review - Cycle 2/3]
+
+ISSUES FOUND
+
+- auth.py:9   Passwords hashed with unsalted MD5. Does not meet basic
+              security requirements for a login/registration module.
+
+- auth.py:15  SQL injection in login query. Crafted username can
+              bypass authentication entirely.
+
+- auth.py:23  create_user always returns True. Cannot report failures
+              for the registration flow described in the brief.
+```
+
+Without the brief, Codex catches the SQL injection and MD5. *With* the brief — knowing this is auth for a web app — it also flags that the approach fundamentally doesn't meet the requirement.
+
+---
+
+<details>
+<summary><h2>How It Works (technical details)</h2></summary>
+
+### The Flow
 
 ```
 Claude works on code
         |
         v
-   Claude stops
+   Claude tries to stop
         |
         v
   Viper stop hook fires
@@ -34,10 +91,16 @@ Claude works on code
        YES
         |
         v
-  Read file contents
+  Brief exists? --NO--> Block: "Write .viper/brief.md first"
+        |                          |
+       YES                    Claude writes brief, retries
+        |                          |
+        v  <-----------------------+
+  Tell Codex which files changed
         |
         v
-  Send to Codex CLI (stdin)
+  Codex reads files + git diff + related code
+  (full filesystem access, read-only sandbox)
         |
         v
   APPROVED? --YES--> Claude stops normally
@@ -45,7 +108,7 @@ Claude works on code
         NO
         |
         v
-  Block Claude + inject feedback
+  Block Claude + inject review feedback
         |
         v
   Claude fixes issues, tries to stop again
@@ -54,73 +117,121 @@ Claude works on code
   (cycle repeats up to max_review_cycles)
 ```
 
-## Getting Started
+### Why Codex reads the files itself
+
+Earlier versions stuffed file contents into the prompt (up to 20KB, 15 files, truncated). This caused:
+- Windows command-line length limits (8191 chars)
+- Truncated files = partial context = confident wrong answers
+- No ability to follow imports or read related code
+
+Now Viper just passes the file *paths*. Codex runs in read-only sandbox mode with full filesystem access — it reads the actual files, runs `git diff`, follows imports, checks callers. No truncation. No context limits.
+
+### The Review Brief
+
+The secret sauce. On first stop, if no `.viper/brief.md` exists, Viper blocks Claude and asks it to write one:
+
+```
+[Viper] Write a review brief before stopping.
+
+Create .viper/brief.md with:
+- Task: What was requested
+- Approach: What you did and why
+- Key decisions: Architectural choices, tradeoffs made
+- Changed files: What each file change does
+- Edge cases: What you considered and what you didn't
+```
+
+Claude already has all this context — it just did the work. Writing it down takes seconds. But it transforms the review from "does this code have bugs" to "does this code solve the right problem the right way."
+
+### Fail-Open Design
+
+If anything goes wrong — no git repo, Codex unavailable, API error, rate limit, timeout — Viper lets Claude stop normally. Your workflow is never blocked by a broken reviewer.
+
+</details>
+
+---
+
+<details>
+<summary><h2>Getting Started</h2></summary>
 
 ### Prerequisites
 
 - **Python 3.8+**
-- **Claude Code** CLI installed and working
-- **Codex CLI** (`npm install -g @openai/codex`) — or an OpenRouter API key for the fallback
+- **Claude Code** CLI
+- **Codex CLI** (`npm install -g @openai/codex`) with **ChatGPT Plus** ($20/mo)
 
-### Installation
+### Install
 
-1. **Clone the repo** into your Claude Code hooks directory:
+```bash
+# Clone into your hooks directory
+# Windows
+git clone https://github.com/postgigg/viper-2.0.git "%APPDATA%\.claude\hooks\viper"
 
-   ```bash
-   # Windows
-   git clone https://github.com/postgigg/viper-2.0.git "%APPDATA%\.claude\hooks\viper"
+# macOS/Linux
+git clone https://github.com/postgigg/viper-2.0.git ~/.claude/hooks/viper
+```
 
-   # macOS/Linux
-   git clone https://github.com/postgigg/viper-2.0.git ~/.claude/hooks/viper
-   ```
+### Register the hook
 
-2. **Register the stop hook** in your Claude Code settings (`~/.claude/settings.json`):
+Add to `~/.claude/settings.json`:
 
-   ```json
-   {
-     "hooks": {
-       "Stop": [
-         {
-           "type": "command",
-           "command": "python ~/.claude/hooks/viper/viper.py"
-         }
-       ]
-     }
-   }
-   ```
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "type": "command",
+        "command": "python ~/.claude/hooks/viper/viper.py"
+      }
+    ]
+  }
+}
+```
 
-   On Windows, use the batch wrapper instead:
+On Windows, use the batch wrapper:
 
-   ```json
-   {
-     "hooks": {
-       "Stop": [
-         {
-           "type": "command",
-           "command": "C:/Users/YOUR_USER/.claude/hooks/viper/viper.bat"
-         }
-       ]
-     }
-   }
-   ```
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "type": "command",
+        "command": "C:/Users/YOUR_USER/.claude/hooks/viper/viper.bat"
+      }
+    ]
+  }
+}
+```
 
-3. **Install Codex CLI** (recommended):
+### Authenticate Codex
 
-   ```bash
-   npm install -g @openai/codex
-   ```
+```bash
+npm install -g @openai/codex
+codex login
+```
 
-   Make sure your `OPENAI_API_KEY` environment variable is set.
+### Enable architectural reviews
 
-4. **(Optional) Configure OpenRouter fallback** — edit `config.json` and add your API key:
+Copy `CLAUDE_SNIPPET.md` into your project's `CLAUDE.md`. This tells Claude to write a review brief (`.viper/brief.md`) before stopping — giving Codex the context to catch design problems, not just bugs.
 
-   ```json
-   {
-     "openrouter_api_key": "sk-or-..."
-   }
-   ```
+Add `.viper/` to your `.gitignore`.
 
-### Configuration
+### (Optional) OpenRouter fallback
+
+If Codex is unavailable, Viper can fall back to the OpenRouter API. Edit `config.json`:
+
+```json
+{
+  "openrouter_api_key": "sk-or-..."
+}
+```
+
+</details>
+
+---
+
+<details>
+<summary><h2>Configuration</h2></summary>
 
 Edit `config.json` in the viper directory:
 
@@ -130,29 +241,42 @@ Edit `config.json` in the viper directory:
 | `max_review_cycles` | `3` | Max review/fix cycles before allowing stop |
 | `openrouter_api_key` | `""` | OpenRouter API key (fallback when Codex unavailable) |
 | `fallback_model` | `"openai/gpt-4o"` | Model to use via OpenRouter |
-| `max_context_chars` | `20000` | Max total characters of file content to send for review |
+| `max_context_chars` | `20000` | Max total characters of file content to send (API fallback only) |
 
-### Troubleshooting
+</details>
 
-- **"The command line is too long"** — Update to the latest version. Viper 2.0 pipes prompts via stdin instead of command-line arguments.
-- **Hook never triggers** — Verify the hook is registered in `settings.json` under the `Stop` event.
-- **Stuck in a review loop** — Delete `.viper/state.json` in your project directory, or set `"approved": true` in it.
-- **Codex not found** — Make sure `codex` is on your PATH. Run `codex --version` to verify. On Windows, the npm global bin (`%APPDATA%\npm`) must be in PATH.
-- **Encoding errors on Windows** — Update to the latest version. Viper 2.0 forces UTF-8 encoding for subprocess output.
+---
 
-## Limitations — What This Is and Isn't
+<details>
+<summary><h2>Troubleshooting</h2></summary>
 
-**Viper is a surface-level bug gate, not an architectural reviewer.** It catches the dumb stuff — null checks, obvious security holes, off-by-one errors, missing edge cases. It will not catch wrong abstractions, misunderstood requirements, or design drift. Those require a human with full project context.
+| Problem | Fix |
+|---------|-----|
+| **"The command line is too long"** | Update to latest — prompts are piped via stdin now |
+| **Hook never triggers** | Check `settings.json` has the hook under `Stop` event |
+| **Stuck in review loop** | Delete `.viper/state.json` or set `"approved": true` in it |
+| **Codex not found** | Run `codex --version`. Ensure npm global bin is in PATH |
+| **Rate limited** | Run `codex logout && codex login` to refresh auth. Requires ChatGPT Plus |
+| **Encoding errors (Windows)** | Update to latest — forces UTF-8 for subprocess output |
 
-**Partial context means partial confidence.** The reviewer sees at most 15 files / 20KB of changes. It does not see the full codebase, git history, or the intent behind the changes. The review prompt explicitly tells the reviewer to only flag issues it can confirm from what it sees — but be aware that this is a narrow lens.
+</details>
 
-**Your code is sent to external APIs.** Every stop event with changed files sends code to OpenAI (Codex CLI) or OpenRouter. If you're working on proprietary code, understand that this is a data flow to third-party services. Evaluate whether that's acceptable for your use case.
+---
 
-**This does not replace code review.** It's an automated first pass that runs in the background. Treat it like a linter with opinions — useful, but not authoritative.
+<details>
+<summary><h2>Limitations</h2></summary>
 
-## How It Fails
+**With a review brief, Viper catches architectural problems too.** When Claude writes `.viper/brief.md`, Codex can verify the implementation matches the intent — wrong abstractions, misunderstood requirements, missing functionality. Without the brief, it still catches code-level bugs but can't review against intent.
 
-Viper is designed to **fail open** — if anything goes wrong (no git repo, codex unavailable, API error, timeout), Claude is allowed to stop normally. Your workflow is never blocked by a broken review.
+**Codex has full filesystem access** (read-only) and can follow imports, read related files, and run `git diff`. This is not a truncated-snippet reviewer.
+
+**Your code is sent to OpenAI.** Codex CLI runs locally but calls OpenAI's API. The OpenRouter fallback also sends code externally. If you're working on proprietary code, evaluate whether that's acceptable.
+
+**This does not replace code review.** It's an automated QC gate. Treat it like a senior dev glancing at your diff — useful, but not a substitute for proper review on critical changes.
+
+</details>
+
+---
 
 ## License
 

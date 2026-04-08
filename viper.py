@@ -76,15 +76,17 @@ def get_changed_files(cwd):
     except Exception:
         return []
 
+    # Exclude viper's own state files
+    changed = {f for f in changed if not f.startswith('.viper/')}
     return sorted(changed)
 
 
 def read_changed_files(cwd, changed_files, max_chars=20000):
-    """Read the contents of changed files, skipping binary files."""
+    """Read the contents of changed files (only used for API fallback)."""
     parts = []
     total = 0
 
-    for fname in changed_files[:15]:  # Cap at 15 files
+    for fname in changed_files[:15]:
         fpath = os.path.join(cwd, fname)
         if not os.path.isfile(fpath):
             continue
@@ -92,7 +94,7 @@ def read_changed_files(cwd, changed_files, max_chars=20000):
             with open(fpath, 'r', encoding='utf-8', errors='strict') as f:
                 content = f.read()
         except (UnicodeDecodeError, PermissionError, OSError):
-            continue  # Skip binary or inaccessible files
+            continue
 
         if len(content) > 4000:
             content = content[:4000] + "\n... [truncated]"
@@ -115,7 +117,6 @@ def load_state(cwd, session_id):
                 return state
         except Exception:
             pass
-    # New session or corrupted state
     return {"session_id": session_id, "cycle": 0, "approved": False}
 
 
@@ -138,30 +139,59 @@ def cleanup_state(cwd):
 def is_approved(text):
     """Check if review text indicates approval."""
     if not text:
-        return True  # No review = auto-approve
+        return True
     upper = text.upper()
     if "ISSUES FOUND" in upper or "NOT APPROVED" in upper:
         return False
     if "APPROVED" in upper:
         return True
-    # Ambiguous — treat as issues found to be safe
     return False
 
 
-def run_codex_cli(cwd, file_contents, config):
-    """Run Codex CLI in read-only mode to review changes."""
+def load_brief(cwd):
+    """Load the review brief written by Claude, if it exists."""
+    brief_path = os.path.join(cwd, '.viper', 'brief.md')
+    if os.path.exists(brief_path):
+        try:
+            with open(brief_path, encoding='utf-8') as f:
+                return f.read().strip()
+        except Exception:
+            pass
+    return ""
+
+
+def run_codex_cli(cwd, changed_files, config):
+    """Run Codex CLI to review changes. Codex reads the files itself."""
     timeout = config.get("codex_timeout", 180)
 
+    file_list = "\n".join(f"- {f}" for f in changed_files)
+    brief = load_brief(cwd)
+
+    brief_section = ""
+    if brief:
+        brief_section = (
+            "## Context from Claude\n"
+            "Claude provided the following brief about what it did and why. "
+            "Use this to verify the implementation matches the intent:\n\n"
+            f"{brief}\n\n"
+        )
+
     prompt = (
-        "Review these code changes for bugs, logic errors, security issues, "
-        "and missing edge cases.\n"
-        "Do NOT nitpick style, formatting, or naming. Only flag real functional problems.\n"
-        "Read the actual files in the project if you need more context.\n\n"
-        "IMPORTANT: You are seeing a partial diff — not the full codebase. "
-        "Do NOT flag issues you're uncertain about due to missing context. "
-        "Only flag problems you can confirm from what you can see. "
-        "If you're unsure, approve and move on.\n\n"
-        f"Changed files:\n{file_contents}\n\n"
+        "You are a senior code reviewer. The following files were modified or created:\n\n"
+        f"{file_list}\n\n"
+        f"{brief_section}"
+        "Your job:\n"
+        "1. Read each changed file listed above\n"
+        "2. Run `git diff HEAD` to see what specifically changed in tracked files\n"
+        "3. For new/untracked files, read the full file since they won't appear in git diff\n"
+        "4. Read any related files (imports, callers, tests) if needed to understand impact\n"
+        "5. Review for:\n"
+        "   - Bugs, logic errors, security issues, missing edge cases\n"
+        "   - Whether the implementation actually matches the stated requirements\n"
+        "   - Wrong abstractions or architectural decisions that will cause problems\n"
+        "   - Missing functionality that was requested but not implemented\n"
+        "   - Misunderstood requirements (code works but solves the wrong problem)\n\n"
+        "Do NOT nitpick style, formatting, or naming. Only flag real problems.\n\n"
         "If everything looks correct, respond with exactly: APPROVED\n"
         "If there are problems, respond with: ISSUES FOUND\n"
         "Then list each issue with file path, line number, and description."
@@ -185,20 +215,28 @@ def run_codex_cli(cwd, file_contents, config):
             encoding='utf-8',
             errors='replace'
         )
+        # Non-zero exit = codex failed (rate limit, crash, etc.) — not a review
+        if result.returncode != 0:
+            return None
         output = result.stdout.strip()
         if not output:
-            output = result.stderr.strip()
-        return output if output else None
+            return None
+        return output
     except (subprocess.TimeoutExpired, FileNotFoundError, Exception):
         return None
 
 
-def run_api_fallback(file_contents, config):
-    """OpenRouter API fallback when Codex CLI is not available."""
+def run_api_fallback(cwd, changed_files, config):
+    """OpenRouter API fallback — must send file contents since no filesystem access."""
     import urllib.request
 
     api_key = config.get("openrouter_api_key", "")
     if not api_key:
+        return None
+
+    max_context = config.get("max_context_chars", 20000)
+    file_contents = read_changed_files(cwd, changed_files, max_context)
+    if not file_contents:
         return None
 
     prompt = (
@@ -234,16 +272,15 @@ def run_api_fallback(file_contents, config):
         return None
 
 
-def run_review(cwd, file_contents, config):
+def run_review(cwd, changed_files, config):
     """Run review via Codex CLI, falling back to API if unavailable."""
     codex_path = shutil.which('codex')
     if codex_path:
-        result = run_codex_cli(cwd, file_contents, config)
+        result = run_codex_cli(cwd, changed_files, config)
         if result:
             return result
 
-    # Fallback to API
-    return run_api_fallback(file_contents, config)
+    return run_api_fallback(cwd, changed_files, config)
 
 
 def main():
@@ -251,7 +288,7 @@ def main():
     try:
         event = json.load(sys.stdin)
     except Exception:
-        sys.exit(0)  # Can't parse input, don't block
+        sys.exit(0)
 
     cwd = event.get("cwd", os.getcwd())
     session_id = event.get("session_id", "unknown")
@@ -259,7 +296,7 @@ def main():
     # 2. Check git diff — any files changed?
     changed = get_changed_files(cwd)
     if not changed:
-        sys.exit(0)  # No changes, let Claude stop
+        sys.exit(0)
 
     # 3. Load cycle state (prevent infinite loops)
     state = load_state(cwd, session_id)
@@ -268,30 +305,45 @@ def main():
 
     if state["cycle"] >= max_cycles:
         cleanup_state(cwd)
-        sys.exit(0)  # Max cycles reached, let Claude stop
+        sys.exit(0)
 
     if state.get("approved"):
-        sys.exit(0)  # Already approved this session
+        sys.exit(0)
 
-    # 4. Gather changed file contents for review
-    max_context = config.get("max_context_chars", 20000)
-    file_contents = read_changed_files(cwd, changed, max_context)
-    if not file_contents:
-        sys.exit(0)  # No readable file contents
+    # 4. Check for review brief — if missing on first cycle, ask Claude to write one
+    brief = load_brief(cwd)
+    if not brief and state["cycle"] == 0:
+        state["cycle"] += 1
+        save_state(cwd, state)
+        output = {
+            "decision": "block",
+            "reason": (
+                "[Viper] Write a review brief before stopping.\n\n"
+                "Create `.viper/brief.md` with:\n"
+                "- **Task**: What was requested\n"
+                "- **Approach**: What you did and why\n"
+                "- **Key decisions**: Architectural choices, tradeoffs made\n"
+                "- **Changed files**: What each file change does\n"
+                "- **Edge cases**: What you considered and what you didn't\n\n"
+                "Then try to stop again."
+            )
+        }
+        print(json.dumps(output))
+        sys.exit(0)
 
-    # 5. Run review (Codex CLI or API fallback)
-    review = run_review(cwd, file_contents, config)
+    # 5. Run review — Codex reads files itself, API fallback gets contents
+    review = run_review(cwd, changed, config)
 
     if not review:
         sys.exit(0)  # Review failed, fail open
 
-    # 6. Parse verdict
+    # 5. Parse verdict
     if is_approved(review):
         state["approved"] = True
         save_state(cwd, state)
-        sys.exit(0)  # Approved — Claude can stop
+        sys.exit(0)
 
-    # 7. ISSUES FOUND — block Claude from stopping
+    # 6. ISSUES FOUND — block Claude from stopping
     state["cycle"] += 1
     save_state(cwd, state)
 
