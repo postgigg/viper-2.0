@@ -177,7 +177,9 @@ def run_codex_cli(cwd, file_contents, config):
             capture_output=True,
             text=True,
             timeout=timeout,
-            cwd=cwd
+            cwd=cwd,
+            encoding='utf-8',
+            errors='replace'
         )
         output = result.stdout.strip()
         if not output:
