@@ -272,7 +272,7 @@ Edit `config.json` in the viper directory:
 
 **Your code is sent to OpenAI.** Codex CLI runs locally but calls OpenAI's API. The OpenRouter fallback also sends code externally. If you're working on proprietary code, evaluate whether that's acceptable.
 
-**This does not replace code review.** It's an automated QC gate. Treat it like a senior dev glancing at your diff — useful, but not a substitute for proper review on critical changes.
+**This does not replace code review.** It's an automated QC gate — but not a shallow one. Codex has full filesystem access, reads the actual files, follows imports, checks callers, and reviews against the stated intent. Treat it like a senior dev diving into your code, not just glancing at the diff.
 
 </details>
 
