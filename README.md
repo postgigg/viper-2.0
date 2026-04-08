@@ -140,6 +140,16 @@ Edit `config.json` in the viper directory:
 - **Codex not found** — Make sure `codex` is on your PATH. Run `codex --version` to verify. On Windows, the npm global bin (`%APPDATA%\npm`) must be in PATH.
 - **Encoding errors on Windows** — Update to the latest version. Viper 2.0 forces UTF-8 encoding for subprocess output.
 
+## Limitations — What This Is and Isn't
+
+**Viper is a surface-level bug gate, not an architectural reviewer.** It catches the dumb stuff — null checks, obvious security holes, off-by-one errors, missing edge cases. It will not catch wrong abstractions, misunderstood requirements, or design drift. Those require a human with full project context.
+
+**Partial context means partial confidence.** The reviewer sees at most 15 files / 20KB of changes. It does not see the full codebase, git history, or the intent behind the changes. The review prompt explicitly tells the reviewer to only flag issues it can confirm from what it sees — but be aware that this is a narrow lens.
+
+**Your code is sent to external APIs.** Every stop event with changed files sends code to OpenAI (Codex CLI) or OpenRouter. If you're working on proprietary code, understand that this is a data flow to third-party services. Evaluate whether that's acceptable for your use case.
+
+**This does not replace code review.** It's an automated first pass that runs in the background. Treat it like a linter with opinions — useful, but not authoritative.
+
 ## How It Fails
 
 Viper is designed to **fail open** — if anything goes wrong (no git repo, codex unavailable, API error, timeout), Claude is allowed to stop normally. Your workflow is never blocked by a broken review.
