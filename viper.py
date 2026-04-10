@@ -699,6 +699,9 @@ def main():
     # 2. Check git diff — any files changed?
     changed = get_changed_files(cwd)
     if not changed:
+        output = {"decision": "allow", "reason": "[Viper] No changed files detected — nothing for Codex to review. You're clear."}
+        print(json.dumps(output))
+        print("\033[42;97;1m Codex CLEARED \033[0m No changed files — nothing to review.", file=sys.stderr)
         sys.exit(0)
 
     # 3. Load cycle state (prevent infinite loops)
@@ -708,9 +711,15 @@ def main():
 
     if state["cycle"] >= max_cycles:
         cleanup_state(cwd)
+        output = {"decision": "allow", "reason": f"[Viper] Max review cycles ({max_cycles}) reached — letting you through."}
+        print(json.dumps(output))
+        print(f"\033[42;97;1m Codex CLEARED \033[0m Max review cycles ({max_cycles}) reached.", file=sys.stderr)
         sys.exit(0)
 
     if state.get("approved"):
+        output = {"decision": "allow", "reason": "[Viper] Already approved this session — you're clear."}
+        print(json.dumps(output))
+        print("\033[42;97;1m Codex CLEARED \033[0m Already approved this session.", file=sys.stderr)
         sys.exit(0)
 
     # 4. Check for review brief — if missing on first cycle, ask Claude to write one
@@ -757,6 +766,10 @@ def main():
         # already been signed off on.
         clear_last_findings(cwd)
         clear_last_approved_plan(cwd)
+        cycle_num = state["cycle"] + 1
+        output = {"decision": "allow", "reason": f"[Viper] Codex reviewed your changes — APPROVED (cycle {cycle_num}). Green light."}
+        print(json.dumps(output))
+        print(f"\033[42;97;1m Codex CLEARED \033[0m Changes approved (cycle {cycle_num}).", file=sys.stderr)
         sys.exit(0)
 
     # 6. ISSUES FOUND — block Claude from stopping.
@@ -778,6 +791,7 @@ def main():
         )
     }
     print(json.dumps(output))
+    print(f"\033[41;97;1m Codex ISSUES FOUND \033[0m Cycle {state['cycle']}/{max_cycles} — review blocked.", file=sys.stderr)
     sys.exit(0)
 
 
