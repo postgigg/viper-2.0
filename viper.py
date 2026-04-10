@@ -29,6 +29,8 @@ def _ensure_npm_path():
 
 _ensure_npm_path()
 
+__version__ = "2.0.0"
+
 
 def _find_cmd(name):
     """Resolve a command to its full path, or return the name as-is."""

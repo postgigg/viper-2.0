@@ -297,8 +297,10 @@ Add to `~/.claude/settings.json`:
   "hooks": {
     "Stop": [
       {
-        "type": "command",
-        "command": "python ~/.claude/hooks/viper/viper.py"
+        "hooks": [
+          { "type": "command", "command": "python ~/.claude/hooks/viper/viper.py" }
+        ],
+        "timeout": 300
       }
     ]
   }
@@ -312,8 +314,10 @@ On Windows, use the batch wrapper:
   "hooks": {
     "Stop": [
       {
-        "type": "command",
-        "command": "C:/Users/YOUR_USER/.claude/hooks/viper/viper.bat"
+        "hooks": [
+          { "type": "command", "command": "C:/Users/YOUR_USER/.claude/hooks/viper/viper.bat" }
+        ],
+        "timeout": 300
       }
     ]
   }
@@ -402,14 +406,20 @@ The manual way (same result):
 {
   "hooks": {
     "Stop": [
-      { "hooks": [{ "type": "command", "command": "python ~/.claude/hooks/viper/viper.py" }] }
+      {
+        "hooks": [
+          { "type": "command", "command": "python ~/.claude/hooks/viper/viper.py" }
+        ],
+        "timeout": 300
+      }
     ],
     "PreToolUse": [
       {
         "matcher": "ExitPlanMode",
         "hooks": [
           { "type": "command", "command": "python ~/.claude/hooks/viper/plan_review.py" }
-        ]
+        ],
+        "timeout": 300
       }
     ]
   }
@@ -461,6 +471,8 @@ Edit `config.json` in the viper directory:
 | **Cycle-aware reviewer keeps reviving stale findings** | `.viper/last_findings.md` is per-session and is cleared on APPROVED, max-cycles cleanup, and via `cleanup_state()`. If it persists across what should be a new session, delete the file (or also delete `.viper/state.json` to force a fresh session) |
 | **Plan drift section never appears** | `.viper/last_approved_plan.md` is only written by `plan_review.py` after a plan is APPROVED. If you don't have plan review enabled, or if your plans are getting denied, the file isn't written and the drift section is omitted from the prompt. Enable `plan_review_enabled: true` and register the PreToolUse hook |
 | **Plan drift flagged a small unrelated change as drift** | The prompt asks Codex to flag MAJOR deviations only and explicitly excludes "small helper functions or local cleanup". If it's still nitpicking, add to `.viper/rules.md`: *"Plan drift: don't flag refactors local to the changed area unless they exceed 50 lines or touch new files"* |
+| **Cycle count resets unexpectedly** | Two concurrent Claude sessions in the same project each write their own `state.json` with a different `session_id`. When the second session's ID doesn't match, Viper treats it as a fresh session (fail-open). This is by design — not a bug. Each session gets its own cycle counter |
+| **Viper never blocks (silently passes)** | Check the `"timeout"` field on the Stop hook in `~/.claude/settings.json`. Codex can take up to 180s (`codex_timeout` in `config.json`). If the hook timeout is shorter (e.g. Claude Code's default), the hook process gets killed before Codex responds and Viper fails open. Set `"timeout": 300` on the hook entry |
 
 </details>
 

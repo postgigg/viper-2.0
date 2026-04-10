@@ -42,6 +42,8 @@ import os
 import sys
 from pathlib import Path
 
+from viper import __version__
+
 # Force UTF-8 output on Windows. Use reconfigure() to avoid the destructor
 # bug that closes the underlying buffer when the original wrapper is replaced.
 if os.name == 'nt':
@@ -249,8 +251,20 @@ def cmd_init(project_arg=None):
         print(f"{FAIL} Not a directory: {project}", file=sys.stderr)
         return 1
 
+    # Warn if not inside a git repo — Viper needs git to detect changed files
+    import subprocess as _sp
+    try:
+        _is_git = _sp.run(['git', 'rev-parse', '--is-inside-work-tree'],
+                          cwd=str(project), capture_output=True, timeout=5).returncode == 0
+    except (OSError, _sp.TimeoutExpired):
+        _is_git = False
+
     print(f"[viper init] in {project}")
     print()
+
+    if not _is_git:
+        print(f"{WARN} Not a git repository — Viper requires git to detect changed files")
+        print()
 
     viper_dir = project / '.viper'
 
@@ -320,7 +334,8 @@ def cmd_init(project_arg=None):
         print('        {')
         print('          "hooks": [')
         print(f'            {{ "type": "command", "command": "python {hook_path}" }}')
-        print('          ]')
+        print('          ],')
+        print('          "timeout": 300')
         print('        }')
         print('      ]')
         print('    }')
@@ -332,7 +347,7 @@ def cmd_init(project_arg=None):
     else:
         print(f"{SKIP} Plan-review hook NOT registered (optional)")
         print(f"     To enable: set plan_review_enabled=true in config.json AND add a")
-        print(f"     PreToolUse hook with matcher 'ExitPlanMode' pointing at:")
+        print(f"     PreToolUse hook with matcher 'ExitPlanMode' and \"timeout\": 300 pointing at:")
         print(f"       python {plan_hook_path}")
 
     print()
@@ -394,7 +409,7 @@ def cmd_status(project_arg=None):
         print(f"{FAIL} Not a directory: {project}", file=sys.stderr)
         return 1
 
-    print(f"Viper Status — {project}")
+    print(f"Viper {__version__} — Status — {project}")
     print("=" * 60)
     print()
 
@@ -597,7 +612,8 @@ def cmd_enable_plan_review():
     print('          "matcher": "ExitPlanMode",')
     print('          "hooks": [')
     print(f'            {{ "type": "command", "command": "python {plan_hook_path}" }}')
-    print('          ]')
+    print('          ],')
+    print('          "timeout": 300')
     print('        }')
     print('      ]')
     print('    }')
@@ -726,6 +742,7 @@ def cmd_review(project_arg=None):
 # ---------------------------------------------------------------------------
 
 def usage():
+    print(f"Viper {__version__}")
     print(__doc__)
 
 
