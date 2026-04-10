@@ -1,7 +1,6 @@
 {
   "codex_timeout": 180,
-  "max_review_cycles": 3,
-  "openrouter_api_key": "",
-  "fallback_model": "openai/gpt-4o",
-  "max_context_chars": 20000
+  "max_review_cycles": 4,
+  "test_timeout": 60,
+  "plan_review_enabled": false
 }
